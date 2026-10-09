@@ -10,11 +10,25 @@ from tkinter import ttk
 import webbrowser
 from languages import LANGUAGES, TRANSLATORS, is_rtl, display_text as get_display
 
+from i18n import UI_LANGUAGES, translate_ui
 from audio import outputs
 from config import load_key, load_settings, save_settings
 from pipeline import Runner, APIError
 
 MODE_NAMES = {'live':'Live — дороже', 'transcribe':'Обычный — дешевле'}
+
+
+class StatusText(tk.StringVar):
+    def __init__(self, app, value):
+        self.app, self.raw = app, value
+        super().__init__(master=app.root, value=app.ui_text(value))
+
+    def set(self, value):
+        self.raw = value
+        super().set(self.app.ui_text(value))
+
+    def refresh(self):
+        super().set(self.app.ui_text(self.raw))
 
 
 class InputShape:
@@ -198,8 +212,13 @@ class App:
         self.root = tk.Tk()
         self.root.title('Переводчик субтитров')
         settings = load_settings()
-        self.root.geometry(settings.get('control_geometry','480x290'))
-        self.root.minsize(440,290)
+        self.ui_language = settings.get('ui_language','ru')
+        if self.ui_language not in UI_LANGUAGES:
+            self.ui_language = 'ru'
+        self.ui_sources = {}
+        self.ui_titles = {}
+        self.root.geometry(settings.get('control_geometry','500x330'))
+        self.root.minsize(500,330)
         self.history = History(self.root,settings)
         self.events = queue.Queue(maxsize=256)
         self.loop = self.runner = self.task = self.thread = None
@@ -208,10 +227,18 @@ class App:
         self.settings = settings
         self.mode = tk.StringVar(value=MODE_NAMES.get(settings.get('mode','live'),MODE_NAMES['live']))
         self.source = settings.get('source')  # None means follow default
-        self.status = tk.StringVar(value='Готово · ключ найден' if self.key else 'Не найден файл с ключом')
+        self.status = StatusText(self,value='Готово · ключ найден' if self.key else 'Не найден файл с ключом')
         self.locked = tk.BooleanVar(value=False)
         top = ttk.Frame(self.root,padding=16)
         top.pack(fill='both',expand=True)
+        header = ttk.Frame(top)
+        header.pack(fill='x',pady=(0,4))
+        self.ui_button = ttk.Menubutton(header,text='🌐',width=3)
+        self.ui_button.pack(side='right')
+        self.ui_menu = tk.Menu(self.ui_button,tearoff=False)
+        for code, name in UI_LANGUAGES.items():
+            self.ui_menu.add_command(label=get_display(name),command=lambda code=code:self.set_ui_language(code))
+        self.ui_button.configure(menu=self.ui_menu)
         self.source_language = tk.StringVar(value=LANGUAGES.get(settings.get('source_language','he'),LANGUAGES['he'])[0])
         self.target_language = tk.StringVar(value=LANGUAGES.get(settings.get('target_language','ru'),LANGUAGES['ru'])[0])
         self.translator = settings.get('translator','gpt-4o-mini')
@@ -245,19 +272,61 @@ class App:
         self.quota_window = None
         self.advanced_window = None
         self.root.protocol('WM_DELETE_WINDOW',self.close)
-        self.root.after(40,self.poll)
+        self.poll_timer = self.root.after(40,self.poll)
+        self.root.bind('<Destroy>',self.cancel_poll_timer,add='+')
         self.history.set_hebrew(self.history.show_hebrew)
-        self.history.window.title('Субтитры — '+self.source_language.get()+' → '+self.target_language.get())
+        self.apply_ui_language()
+
+    def cancel_poll_timer(self, event):
+        if event.widget is self.root:
+            self.root.after_cancel(self.poll_timer)
+
+    def ui_text(self, text):
+        return get_display(translate_ui(text,self.ui_language))
+
+    def set_ui_language(self, code):
+        if code not in UI_LANGUAGES:
+            return
+        self.ui_language = code
+        self.apply_ui_language()
+        self.persist()
+
+    def apply_ui_language(self):
+        def visit(widget):
+            if isinstance(widget,(tk.Tk,tk.Toplevel)) and widget != self.history.window:
+                original = self.ui_titles.setdefault(widget,widget.title())
+                widget.title(self.ui_text(original))
+            try:
+                text = str(widget.cget('text'))
+            except tk.TclError:
+                text = ''
+            if text and widget != self.ui_button:
+                original = self.ui_sources.setdefault((widget,'text'),text)
+                widget.configure(text=self.ui_text(original))
+            if isinstance(widget,ttk.Combobox):
+                index = widget.current()
+                original = self.ui_sources.setdefault((widget,'values'),tuple(widget.cget('values')))
+                widget.configure(values=[self.ui_text(value) for value in original])
+                if index >= 0:
+                    widget.current(index)
+            for child in widget.winfo_children():
+                visit(child)
+        visit(self.root)
+        self.status.refresh()
+        self.root.update_idletasks()
+        self.root.minsize(max(500,self.root.winfo_reqwidth()),max(330,self.root.winfo_reqheight()))
+        self.history.window.title(self.ui_text('Субтитры')+' — '+self.source_language.get()+' → '+self.target_language.get())
 
     def language_id(self, variable):
-        return next(k for k,v in LANGUAGES.items() if v[0] == variable.get())
+        box = self.language_boxes[0 if variable is self.source_language else 1]
+        return list(LANGUAGES)[box.current()]
 
     def languages_changed(self, _=None):
-        self.history.window.title('Субтитры — '+self.source_language.get()+' → '+self.target_language.get())
+        self.history.window.title(self.ui_text('Субтитры')+' — '+self.source_language.get()+' → '+self.target_language.get())
         self.persist()
 
     def mode_id(self):
-        return next(k for k,v in MODE_NAMES.items() if v==self.mode.get())
+        return list(MODE_NAMES)[self.mode_box.current()]
 
     def show_history(self):
         self.history.window.deiconify()
@@ -289,7 +358,8 @@ class App:
         if self.advanced_window and self.advanced_window.winfo_exists():
             self.advanced_window.destroy()
         self.status.set('Подключение…')
-        self.start_button.configure(text='Пауза')
+        self.ui_sources[(self.start_button,'text')] = 'Пауза'
+        self.start_button.configure(text=self.ui_text('Пауза'))
         self.advanced_button.configure(state='disabled')
         for box in self.language_boxes:
             box.configure(state='disabled')
@@ -353,7 +423,7 @@ class App:
         model_box = ttk.Combobox(frame,textvariable=model,values=list(TRANSLATORS.values()),state='readonly',width=40)
         model_box.pack(fill='x',pady=6)
         def model_changed(_):
-            self.translator = next(k for k,v in TRANSLATORS.items() if v == model.get())
+            self.translator = list(TRANSLATORS)[model_box.current()]
             self.persist()
         model_box.bind('<<ComboboxSelected>>',model_changed)
         ttk.Label(frame,text='Источник звука').pack(anchor='w')
@@ -396,6 +466,8 @@ class App:
             self.settings['opacity']=float(value)
         ttk.Scale(frame,from_=.5,to=1,variable=opacity,command=opacity_changed).pack(fill='x')
         ttk.Button(frame,text='Готово',command=lambda:(self.persist(),window.destroy())).pack(anchor='e',pady=10)
+        window.variables = (model,selected,show,size,opacity)
+        self.apply_ui_language()
 
     def quota(self):
         self.status.set('Оплатите ключ API!!!! 😉')
@@ -416,6 +488,7 @@ class App:
                 window.destroy()
                 self.start()
         ttk.Button(frame,text='Проверить и продолжить',command=retry).pack(fill='x',pady=4)
+        self.apply_ui_language()
 
     def poll(self):
         for _ in range(256):
@@ -425,7 +498,8 @@ class App:
                 break
             if kind=='finished':
                 value.close()
-                self.start_button.configure(text='Начать',state='normal')
+                self.ui_sources[(self.start_button,'text')] = 'Начать'
+                self.start_button.configure(text=self.ui_text('Начать'),state='normal')
                 self.advanced_button.configure(state='normal')
                 for box in self.language_boxes:
                     box.configure(state='readonly')
@@ -448,10 +522,10 @@ class App:
         if self.closing and not self.active():
             self.root.destroy()
             return
-        self.root.after(40,self.poll)
+        self.poll_timer = self.root.after(40,self.poll)
 
     def persist(self):
-        self.settings.update(mode=self.mode_id(),source=self.source,
+        self.settings.update(mode=self.mode_id(),source=self.source,ui_language=self.ui_language,
             source_language=self.language_id(self.source_language),target_language=self.language_id(self.target_language),translator=self.translator,
             control_geometry=self.root.geometry(),subtitle_geometry=self.history.window.geometry(),
             show_hebrew=self.history.show_hebrew)
