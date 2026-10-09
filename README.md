@@ -32,7 +32,14 @@
 ## Установка
 
 Скачайте проект через GitHub **Code → Download ZIP** и распакуйте либо клонируйте
-репозиторий. В папке проекта выполните:
+репозиторий:
+
+```sh
+git clone https://github.com/wdrakula/hebrew-captions.git
+cd hebrew-captions
+```
+
+В папке проекта выполните:
 
 ```sh
 sudo apt install python3.12-venv python3-tk pulseaudio-utils git
