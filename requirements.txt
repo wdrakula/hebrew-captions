@@ -1,0 +1,5 @@
+websockets>=10.4,<16
+numpy>=1.26,<3
+scipy>=1.11,<2
+onnxruntime>=1.16,<2
+python-bidi>=0.6,<1

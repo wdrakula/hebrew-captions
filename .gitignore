@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+APIkey.txt
+*key*.txt
+settings.json
+settings.tmp
+logs/
+.pytest_cache/
