@@ -7,13 +7,14 @@
                                       ↓
                     фрагменты / непрерывный Live → OpenAI STT
                                       ↓
-                         gpt-4o-mini → история субтитров
+                         Выбранный переводчик → история субтитров
 ```
 
 - `captions.py`: запуск интерфейса и короткие диагностические режимы.
 - `gui.py`: Tkinter, окно управления, история и X11 input shape для пропуска кликов.
 - `audio.py`: выбор monitor, поток PCM по 100 мс, VAD, ресемплинг и границы реплик.
 - `pipeline.py`: одна STT-сессия, ручные commits, порядок результатов, перевод.
+- `languages.py`: явные языковые пары и модели перевода; без автоопределения.
 - `config.py`: чтение ключа и сохранение настроек без секретов.
 - `journal.py`: журнал метаданных с правами 0600.
 - `summarize.py`: p50/p95 этапов обработки из указанных журналов.
@@ -41,7 +42,7 @@ ONNX работает на CPU с одним потоком. Состояние 
 
 ```sh
 ./run.sh --probe 8
-./run.sh --test-mode transcribe --seconds 12
+./run.sh --test-mode transcribe --seconds 12 --speech-language fr --subtitle-language ru
 .venv/bin/python summarize.py logs/имя-журнала.jsonl
 ```
 

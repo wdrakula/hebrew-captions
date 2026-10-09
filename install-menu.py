@@ -13,7 +13,7 @@ def argument(text):
 base=Path(os.environ.get('XDG_DATA_HOME',Path.home()/'.local/share'))
 destination=base/'applications/hebrew-captions.desktop'
 destination.parent.mkdir(parents=True,exist_ok=True)
-destination.write_text('[Desktop Entry]\nType=Application\nName=Иврит → русский\n'
+destination.write_text('[Desktop Entry]\nType=Application\nName=Переводчик субтитров\n'
     'Comment=Системные субтитры с историей\nExec='+argument(root/'run.sh')+'\nPath='+value(root)+
     '\nIcon=audio-input-microphone\nTerminal=false\nCategories=AudioVideo;Accessibility;\nStartupNotify=false\n')
 print('Ярлык установлен:',destination)

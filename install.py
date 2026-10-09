@@ -64,7 +64,7 @@ def main():
     if not args.no_menu:
         run(str(python), str(ROOT/'install-menu.py'))
     print('\nГотово. Добавьте свой ключ в APIkey.txt рядом с run.sh (одной строкой).')
-    print('Запуск: ./run.sh' + ('' if args.no_menu else ' или «Иврит → русский» в меню приложений.'))
+    print('Запуск: ./run.sh' + ('' if args.no_menu else ' или «Переводчик субтитров» в меню приложений.'))
 
 if __name__ == '__main__':
     try:

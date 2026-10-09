@@ -8,13 +8,13 @@ import time
 import tkinter as tk
 from tkinter import ttk
 import webbrowser
-from bidi.algorithm import get_display
+from languages import LANGUAGES, TRANSLATORS, is_rtl, display_text as get_display
 
 from audio import outputs
 from config import load_key, load_settings, save_settings
 from pipeline import Runner, APIError
 
-MODE_NAMES = {'live':'Live — быстрый', 'transcribe':'Обычный — по фрагментам'}
+MODE_NAMES = {'live':'Live — дороже', 'transcribe':'Обычный — дешевле'}
 
 
 class InputShape:
@@ -82,6 +82,8 @@ class History:
         self.text.pack(fill='both',expand=True)
         self.text.tag_configure('current',foreground='#ffffff')
         self.text.tag_configure('he',foreground='#8aa2b9',justify='right',font=('Sans',15))
+        self.text.tag_configure('ltr',justify='left')
+        self.text.tag_configure('rtl',justify='right')
         self.text.configure(yscrollcommand=self.scrolled)
         self.jump = ttk.Button(self.frame,text='К текущему ↓',command=self.bottom)
         self.partial = tk.StringVar()
@@ -122,9 +124,9 @@ class History:
             self.text.mark_gravity('viewport', 'left')
             self.text.delete(start, end)
             if self.show_hebrew:
-                self.text.insert(end, get_display(value['he'])+'\n', ('he',))
+                self.text.insert(end, get_display(value['he'])+'\n', ('he', 'rtl' if is_rtl(value['he']) else 'ltr'))
             tags = ('current',) if index == len(self.records)-1 else ()
-            self.text.insert(end, value['ru'], tags)
+            self.text.insert(end, get_display(value['ru']), tags+('rtl' if is_rtl(value['ru']) else 'ltr',))
             self.text.configure(state='disabled')
             if follows:
                 self.text.see('end')
@@ -160,8 +162,8 @@ class History:
             self.text.mark_set(start, 'end-1c')
             self.text.mark_gravity(start, 'left')
         if self.show_hebrew:
-            self.text.insert('end',get_display(he)+'\n',('he',))
-        self.text.insert('end',ru,('current',))
+            self.text.insert('end',get_display(he)+'\n',('he','rtl' if is_rtl(he) else 'ltr'))
+        self.text.insert('end',get_display(ru),('current','rtl' if is_rtl(ru) else 'ltr'))
         if index is not None:
             self.text.mark_set(end, 'end-1c')
             self.text.mark_gravity(end, 'right')
@@ -194,10 +196,10 @@ class History:
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title('Иврит → русский')
+        self.root.title('Переводчик субтитров')
         settings = load_settings()
-        self.root.geometry(settings.get('control_geometry','480x220'))
-        self.root.minsize(440,210)
+        self.root.geometry(settings.get('control_geometry','480x290'))
+        self.root.minsize(440,290)
         self.history = History(self.root,settings)
         self.events = queue.Queue(maxsize=256)
         self.loop = self.runner = self.task = self.thread = None
@@ -210,6 +212,22 @@ class App:
         self.locked = tk.BooleanVar(value=False)
         top = ttk.Frame(self.root,padding=16)
         top.pack(fill='both',expand=True)
+        self.source_language = tk.StringVar(value=LANGUAGES.get(settings.get('source_language','he'),LANGUAGES['he'])[0])
+        self.target_language = tk.StringVar(value=LANGUAGES.get(settings.get('target_language','ru'),LANGUAGES['ru'])[0])
+        self.translator = settings.get('translator','gpt-4o-mini')
+        if self.translator not in TRANSLATORS:
+            self.translator = 'gpt-4o-mini'
+        language_row = ttk.Frame(top)
+        language_row.pack(fill='x',pady=(0,10))
+        self.language_boxes = []
+        for variable, label in [(self.source_language,'С какого языка'),(self.target_language,'На какой язык')]:
+            column = ttk.Frame(language_row)
+            column.pack(side='left',expand=True,fill='x')
+            ttk.Label(column,text=label).pack(anchor='w')
+            box = ttk.Combobox(column,textvariable=variable,values=[v[0] for v in LANGUAGES.values()],state='readonly',width=18)
+            box.pack(fill='x',padx=(0,6))
+            box.bind('<<ComboboxSelected>>',self.languages_changed)
+            self.language_boxes.append(box)
         self.mode_box = ttk.Combobox(top,textvariable=self.mode,values=list(MODE_NAMES.values()),state='readonly',width=30)
         self.mode_box.pack(fill='x')
         self.mode_box.bind('<<ComboboxSelected>>',self.switch)
@@ -225,9 +243,18 @@ class App:
         self.advanced_button = ttk.Button(top,text='Дополнительно…',command=self.advanced)
         self.advanced_button.pack(anchor='e')
         self.quota_window = None
+        self.advanced_window = None
         self.root.protocol('WM_DELETE_WINDOW',self.close)
         self.root.after(40,self.poll)
         self.history.set_hebrew(self.history.show_hebrew)
+        self.history.window.title('Субтитры — '+self.source_language.get()+' → '+self.target_language.get())
+
+    def language_id(self, variable):
+        return next(k for k,v in LANGUAGES.items() if v[0] == variable.get())
+
+    def languages_changed(self, _=None):
+        self.history.window.title('Субтитры — '+self.source_language.get()+' → '+self.target_language.get())
+        self.persist()
 
     def mode_id(self):
         return next(k for k,v in MODE_NAMES.items() if v==self.mode.get())
@@ -259,11 +286,16 @@ class App:
         if not self.key:
             self.status.set('Не найден файл с API-ключом')
             return
+        if self.advanced_window and self.advanced_window.winfo_exists():
+            self.advanced_window.destroy()
         self.status.set('Подключение…')
         self.start_button.configure(text='Пауза')
         self.advanced_button.configure(state='disabled')
+        for box in self.language_boxes:
+            box.configure(state='disabled')
         self.show_history()
         mode,source,key = self.mode_id(),self.source,self.key
+        speech, target, translator = self.language_id(self.source_language), self.language_id(self.target_language), self.translator
         def worker():
             def emit(kind,value):
                 try:
@@ -273,7 +305,7 @@ class App:
                         raise RuntimeError('Окно не успевает обрабатывать субтитры')
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            self.runner = Runner(mode,source,key,emit)
+            self.runner = Runner(mode,source,key,emit,speech,target,translator)
             self.task = self.loop.create_task(self.runner.run())
             if self.closing:
                 self.task.cancel()
@@ -306,10 +338,24 @@ class App:
         self.persist()
 
     def advanced(self):
+        if self.active():
+            return
+        if self.advanced_window and self.advanced_window.winfo_exists():
+            self.advanced_window.lift()
+            return
         window = tk.Toplevel(self.root)
+        self.advanced_window = window
         window.title('Дополнительно')
         frame = ttk.Frame(window,padding=16)
         frame.pack(fill='both',expand=True)
+        ttk.Label(frame,text='Модель перевода').pack(anchor='w')
+        model = tk.StringVar(value=TRANSLATORS[self.translator])
+        model_box = ttk.Combobox(frame,textvariable=model,values=list(TRANSLATORS.values()),state='readonly',width=40)
+        model_box.pack(fill='x',pady=6)
+        def model_changed(_):
+            self.translator = next(k for k,v in TRANSLATORS.items() if v == model.get())
+            self.persist()
+        model_box.bind('<<ComboboxSelected>>',model_changed)
         ttk.Label(frame,text='Источник звука').pack(anchor='w')
         try:
             devices = outputs()
@@ -327,7 +373,7 @@ class App:
             self.persist()
         box.bind('<<ComboboxSelected>>',source_changed)
         show = tk.BooleanVar(value=self.history.show_hebrew)
-        ttk.Checkbutton(frame,text='Показывать иврит',variable=show,
+        ttk.Checkbutton(frame,text='Показывать исходный текст',variable=show,
             command=lambda:(self.history.set_hebrew(show.get()),self.persist())).pack(anchor='w',pady=6)
         ttk.Label(frame,text='Размер текста').pack(anchor='w')
         size = tk.IntVar(value=self.settings.get('font_size',21))
@@ -381,6 +427,8 @@ class App:
                 value.close()
                 self.start_button.configure(text='Начать',state='normal')
                 self.advanced_button.configure(state='normal')
+                for box in self.language_boxes:
+                    box.configure(state='readonly')
                 if self.runner and self.runner.stopping:
                     self.status.set('Пауза')
             elif kind=='level':
@@ -390,6 +438,7 @@ class App:
             elif kind=='quota':
                 self.quota()
             elif kind=='partial' and self.history.show_hebrew:
+                self.history.partial_label.configure(anchor='e' if is_rtl(value) else 'w')
                 self.history.partial.set(get_display(value))
             elif kind=='subtitle':
                 self.history.append(value)
@@ -403,6 +452,7 @@ class App:
 
     def persist(self):
         self.settings.update(mode=self.mode_id(),source=self.source,
+            source_language=self.language_id(self.source_language),target_language=self.language_id(self.target_language),translator=self.translator,
             control_geometry=self.root.geometry(),subtitle_geometry=self.history.window.geometry(),
             show_hebrew=self.history.show_hebrew)
         save_settings(self.settings)
