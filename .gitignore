@@ -10,3 +10,4 @@ settings.json
 settings.tmp
 logs/
 .pytest_cache/
+.tox/

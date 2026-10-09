@@ -1,13 +1,20 @@
 #!/bin/sh
+# PYTHON=/path/to/python3.10 ./install.sh selects a specific interpreter.
 set -eu
 cd "$(dirname "$0")"
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python - <<'PY'
-import hashlib, json
-from pathlib import Path
-manifest=json.loads(Path('models/manifest.json').read_text())
-if hashlib.sha256(Path('models/silero_vad.onnx').read_bytes()).hexdigest()!=manifest['sha256']:
-    raise SystemExit('Silero model checksum does not match')
-print('Установка завершена. Добавьте APIkey.txt и запустите ./run.sh')
-PY
+if [ -n "${PYTHON:-}" ]; then
+    interpreter="$PYTHON"
+else
+    interpreter=""
+    for candidate in python3 python3.12 python3.11 python3.10; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3,10))' 2>/dev/null; then
+            interpreter="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$interpreter" ]; then
+    echo 'Нужен Python 3.10 или новее. Установите python3 и повторите установку.' >&2
+    exit 1
+fi
+exec "$interpreter" install.py "$@"

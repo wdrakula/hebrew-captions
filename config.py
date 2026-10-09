@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-KEY_FILE = ROOT.parents[2] / 'APIkey.txt'
+KEY_FILE = ROOT.parents[2] / 'APIkey.txt' if len(ROOT.parents) > 2 else None
 SETTINGS = ROOT / 'settings.json'
 
 
@@ -17,7 +17,7 @@ def load_key():
             if line.startswith('OPENAI_API_KEY='):
                 return line.split('=',1)[1].strip().strip('\"\'')
     for path in (ROOT / 'APIkey.txt', KEY_FILE):
-        if path.exists():
+        if path is not None and path.exists():
             return path.read_text().strip()
     return ''
 
