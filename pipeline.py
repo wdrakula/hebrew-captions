@@ -77,8 +77,8 @@ def remove_overlap(previous, current):
     normalize = lambda w: re.sub(r'[^\w]', '', w).casefold()
     old = [normalize(w) for w in previous.split()]
     new = [normalize(w.group()) for w in words]
-    # A single repeated word can be deliberate, so preserve it.
-    for size in range(min(12, len(old), len(new)), 1, -1):
+    # Short repetitions and whole repeated fragments may be genuine self-corrections.
+    for size in range(min(12, len(old)-1, len(new)-1), 2, -1):
         if old[-size:] == new[:size] and all(new[:size]):
             return current[words[size-1].end():].lstrip(), size
     return current, 0
@@ -115,7 +115,7 @@ class Session:
         await asyncio.wait_for(ws.send(json.dumps({'type':'input_audio_buffer.commit'})), 5)
         self.log.emit('commit', mode=self.mode, sequence=turn.sequence,
                       capture_start_estimate=turn.start, capture_end_estimate=turn.end,
-                      overlap=turn.overlap)
+                      overlap=turn.overlap, overlap_gap=turn.overlap_gap)
         self.active = None
 
     async def send_audio(self, ws):
@@ -211,7 +211,7 @@ class Session:
                     continue
                 provisional = True
             try:
-                fresh, removed = remove_overlap(self.previous, text) if turn.overlap else (text,0)
+                fresh, removed = remove_overlap(self.previous, text) if turn.overlap and not turn.overlap_gap else (text,0)
                 if not fresh:
                     self.log.emit('empty_fragment', sequence=turn.sequence, removed_words=removed)
                     continue
@@ -259,7 +259,9 @@ class Session:
                         break
                 self.log.emit('configuration', mode=self.mode, asr=session_config(self.mode, self.runner.source_language),
                     source_language=self.runner.source_language, target_language=self.runner.target_language,
-                    translator=self.runner.translator, max_new_audio_seconds=self.segmenter.maximum, overlap_seconds=.4 if self.mode=='transcribe' else 0)
+                    translator=self.runner.translator, max_new_audio_seconds=self.segmenter.maximum,
+                    preferred_pause_cut_seconds=1.0 if self.mode=="transcribe" else None,
+                    pause_tail_seconds=.5 if self.mode=="transcribe" else .3, overlap_seconds=.4 if self.mode=='transcribe' else 0)
                 self.runner.emit('mode', self.mode)
                 self.runner.emit('status', 'Слушаю')
                 tasks = [asyncio.create_task(self.send_audio(ws)), asyncio.create_task(self.receive(ws)),

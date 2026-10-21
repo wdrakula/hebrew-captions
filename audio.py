@@ -152,16 +152,19 @@ class Turn:
     overlap: bool = False
     committed: float = 0.
     first_delta: float | None = None
+    overlap_gap: bool = False
 
 
 class Segmenter:
-    """Live ends at pauses (6s safety cap); normal carries 0.4s across 1.2s cuts."""
+    """Normal: pause-aware cuts at 1–1.5s; bounded 0.4s replay across cuts."""
     def __init__(self, mode, maximum=None):
         self.mode = mode
-        self.maximum = maximum if maximum is not None else (6.0 if mode == "live" else 1.2)
+        self.maximum = maximum if maximum is not None else (6.0 if mode == "live" else 1.5)
         self.pre = deque(maxlen=3)
         self.tail = deque(maxlen=4)
         self.carry = []
+        self.carry_pause = False
+        self.overlap_gap = False
         self.active = False
         self.sequence = 0
         self.start = self.end = self.last_voice = self.fresh_start = 0.
@@ -173,13 +176,17 @@ class Segmenter:
         if not self.active:
             self.pre.append(frame)
             if not voiced:
-                self.carry = []
+                # One/two quiet blocks are a hesitation, not permission to lose replay.
+                if self.carry and now-self.carry[-1].end >= .3-.001:
+                    self.carry = []
                 return [], None
             self.active = True
             self.overlap = bool(self.carry)
-            frames = self.carry + [frame] if self.carry else list(self.pre)
+            self.overlap_gap = bool(self.carry) and (
+                self.carry_pause or now-self.carry[-1].end > .1+.001)
+            frames = self.carry + list(self.pre) if self.carry else list(self.pre)
             self.start = frames[0].end - .1
-            self.fresh_start = frame.end - .1
+            self.fresh_start = self.pre[0].end-.1 if self.carry else frame.end-.1
             self.tail.clear()
             self.tail.extend(frames)
             self.pre.clear()
@@ -191,17 +198,24 @@ class Segmenter:
         self.end = now
         if voiced:
             self.last_voice = now
-        forced = now-self.fresh_start >= self.maximum - .001
-        if forced or now-self.last_voice >= .3 - .001:
-            return send, self.finish(forced)
+        age, quiet = now-self.fresh_start, now-self.last_voice
+        # Keep Live behavior; ordinary short utterances get 200ms more hangover.
+        pause = .3 if self.mode == 'live' else .5
+        if quiet >= pause-.001:
+            return send, self.finish(False)
+        boundary_pause = self.mode == 'transcribe' and age >= 1.0-.001 and quiet >= .1-.001
+        forced = age >= self.maximum-.001
+        if forced or boundary_pause:
+            return send, self.finish(True)
         return send, None
 
     def finish(self, forced=False):
         if not self.active:
             return None
         self.sequence += 1
-        turn = Turn(self.sequence, self.start, self.end, self.overlap)
+        turn = Turn(self.sequence, self.start, self.end, self.overlap, overlap_gap=self.overlap_gap)
         self.carry = list(self.tail) if forced and self.mode == 'transcribe' else []
+        self.carry_pause = bool(self.carry) and self.end-self.last_voice >= .1-.001
         self.tail.clear()
         self.active = False
         return turn

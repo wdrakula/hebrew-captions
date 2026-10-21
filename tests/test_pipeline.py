@@ -33,19 +33,19 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(len(packets),3)
         self.assertIsNone(turn)
 
-    def test_forced_cut_12_frames_then_overlap(self):
+    def test_forced_cut_15_frames_then_overlap(self):
         s=Segmenter('transcribe')
-        for n in range(12):
+        for n in range(15):
             packets,turn=s.feed(self.frame(n),True)
         self.assertIsNotNone(turn)
         self.assertEqual(len(s.carry),4)
-        packets,turn=s.feed(self.frame(12),True)
+        packets,turn=s.feed(self.frame(15),True)
         self.assertEqual(len(packets),5)
         self.assertTrue(s.overlap)
-        for n in range(13,24):
+        for n in range(16,30):
             _,turn=s.feed(self.frame(n),True)
         self.assertIsNotNone(turn)
-        self.assertAlmostEqual(turn.end-turn.start,1.6)
+        self.assertAlmostEqual(turn.end-turn.start,1.9)
 
     def test_live_does_not_replay(self):
         s=Segmenter('live')
@@ -58,7 +58,7 @@ class AudioTests(unittest.TestCase):
     def test_pause_finishes_and_no_overlap(self):
         s=Segmenter('transcribe')
         s.feed(self.frame(0),True)
-        for n in range(1,4):
+        for n in range(1,6):
             _,turn=s.feed(self.frame(n,SILENCE),False)
         self.assertIsNotNone(turn)
         self.assertEqual(s.carry,[])
@@ -80,7 +80,7 @@ class AudioTests(unittest.TestCase):
 
     def test_overlap_word_boundaries(self):
         fresh,n=remove_overlap('היום אנחנו מדברים על הנושא','על הנושא, החשוב הזה')
-        self.assertEqual((fresh,n),('החשוב הזה',2))
+        self.assertEqual((fresh,n),('על הנושא, החשוב הזה',0))
         self.assertEqual(remove_overlap('זה טוב','טוב מאוד'),('טוב מאוד',0))
         self.assertEqual(remove_overlap('שלום עולם','נושא אחר'),('נושא אחר',0))
 
