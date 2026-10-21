@@ -107,3 +107,21 @@ def translate_ui(text, code):
     if text.startswith('Ошибка: '):
         return catalog['Ошибка: ']+translate_ui(text[len('Ошибка: '):],code)
     return catalog.get(text,text)
+
+# History tools use the same catalog as the rest of the interface.
+HISTORY_MESSAGES = {
+'История…': ('History…','היסטוריה…','Historique…','Historial…'),
+'История': ('History','היסטוריה','Historique','Historial'),
+'Включать таймкоды': ('Include timestamps','הוספת חותמות זמן','Inclure les horodatages','Incluir marcas de tiempo'),
+'Только оригинал': ('Original only','מקור בלבד','Original seul','Solo original'),
+'Только перевод': ('Translation only','תרגום בלבד','Traduction seule','Solo traducción'),
+'Оригинал и перевод': ('Original and translation','מקור ותרגום','Original et traduction','Original y traducción'),
+'Копировать': ('Copy','העתקה','Copier','Copiar'),
+'Выделить всё': ('Select all','בחירת הכול','Tout sélectionner','Seleccionar todo'),
+'Сохранить TXT…': ('Save TXT…','שמירה כ-TXT…','Enregistrer TXT…','Guardar TXT…'),
+}
+for original, translations in HISTORY_MESSAGES.items():
+    SOURCE.append(original)
+    CATALOGS['ru'][original] = original
+    for code, translated in zip(('en','he','fr','es'),translations):
+        CATALOGS[code][original] = translated

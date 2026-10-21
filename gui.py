@@ -6,11 +6,12 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import webbrowser
 from languages import LANGUAGES, TRANSLATORS, is_rtl, display_text as get_display
 
 from i18n import UI_LANGUAGES, translate_ui
+from history_text import present, timecode, format_history
 from audio import outputs
 from config import load_key, load_settings, save_settings
 from pipeline import Runner, APIError
@@ -90,7 +91,7 @@ class History:
         self.frame.pack(fill='both',expand=True)
         self.text = tk.Text(self.frame,wrap='word',bg='#17212b',fg='#a2acb7',
             font=('Sans',settings.get('font_size',21)),padx=18,pady=12,
-            borderwidth=0,highlightthickness=0,state='disabled',cursor='arrow')
+            borderwidth=0,highlightthickness=0,state='disabled',cursor='xterm',takefocus=True,exportselection=False)
         self.bar = ttk.Scrollbar(self.frame,command=self.text.yview)
         self.bar.pack(side='right',fill='y')
         self.text.pack(fill='both',expand=True)
@@ -105,6 +106,30 @@ class History:
                                       font=('Sans',14),anchor='e',wraplength=900)
         self.show_hebrew = settings.get('show_hebrew',False)
         self.records = []
+        self.record_meta = []
+        self.presentations = {}
+        self.session_started = None
+        self.text.tag_configure('timecode',foreground='#8aa2b9',font=('Sans',11))
+        self.text.bind('<Button-1>',lambda event:self.text.focus_set(),add='+')
+        self.text.bind('<<Copy>>',self.copy_selection)
+        self.text.bind('<<SelectAll>>',self.select_all)
+        self.text.bind('<Control-KeyPress>',self.control_key)
+        self.text.bind('<Control-Insert>',self.copy_selection)
+        self.context_menu = tk.Menu(self.text,tearoff=False)
+        self.context_menu.add_command(label='Копировать',command=self.copy_selection)
+        self.context_menu.add_command(label='Выделить всё',command=self.select_all)
+        self.text.bind('<Button-3>',self.show_context_menu)
+        self.shortcut_codes = {}
+        x = ctypes.CDLL(ctypes.util.find_library('X11'))
+        x.XOpenDisplay.restype = ctypes.c_void_p
+        x.XKeysymToKeycode.argtypes = [ctypes.c_void_p,ctypes.c_ulong]
+        x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        display = x.XOpenDisplay(None)
+        if display:
+            try:
+                self.shortcut_codes = {x.XKeysymToKeycode(display,ord(key)):key for key in 'ac'}
+            finally:
+                x.XCloseDisplay(display)
         self.record_ids = {}
         self.record_marks = {}
         self.follows = True
@@ -125,85 +150,123 @@ class History:
         self.text.see('end')
         self.jump.place_forget()
 
+    def select_all(self, event=None):
+        self.text.tag_add('sel','1.0','end-1c')
+        return 'break'
+
+    def control_key(self, event):
+        key = self.shortcut_codes.get(event.keycode) or {'a':'a','A':'a','ф':'a','Ф':'a','ש':'a','c':'c','C':'c','с':'c','С':'c','ב':'c'}.get(event.keysym)
+        if key == 'a': return self.select_all()
+        if key == 'c': return self.copy_selection()
+
+    def show_context_menu(self, event):
+        try: self.context_menu.tk_popup(event.x_root,event.y_root)
+        finally: self.context_menu.grab_release()
+        return 'break'
+
+    def copy_selection(self, event=None):
+        ranges = self.text.tag_ranges('sel')
+        if not ranges: return 'break'
+        result=[]
+        for n in range(0,len(ranges),2):
+            first,last = str(ranges[n]),str(ranges[n+1])
+            for index in range(len(self.records)):
+                for start,end,presentation in self.presentations.get(index,[]):
+                    if self.text.compare(last,'<=',start) or self.text.compare(first,'>=',end): continue
+                    left = first if self.text.compare(first,'>',start) else start
+                    right = last if self.text.compare(last,'<',end) else end
+                    # Python lengths avoid Tcl's UTF-16 character counts for emoji.
+                    a=len(self.text.get(start,left));b=len(self.text.get(start,right))
+                    result.append(presentation.selected(a,b))
+                if index+1 < len(self.records):
+                    end=self.record_marks[index][1];next_start=self.record_marks[index+1][0]
+                    if self.text.compare(first,'<',next_start) and self.text.compare(last,'>',end):
+                        left=first if self.text.compare(first,'>',end) else end
+                        right=last if self.text.compare(last,'<',next_start) else next_start
+                        result.append(self.text.get(left,right))
+        self.copy_text(''.join(result))
+        return 'break'
+
+    def copy_text(self, value):
+        if value:
+            self.text.clipboard_clear()
+            self.text.clipboard_append(value)
+
+    def export_text(self, variant='both', timestamps=False):
+        return format_history(self.records,self.record_meta,variant,timestamps)
+
+    def save_text(self, path, variant='both', timestamps=False):
+        from pathlib import Path
+        Path(path).write_text(self.export_text(variant,timestamps),encoding='utf-8')
+
     def append(self, value):
         identity = value.get('id')
         if identity is not None and identity in self.record_ids:
             index = self.record_ids[identity]
-            self.records[index] = (value['he'], value['ru'])
-            start, end = self.record_marks[index]
-            follows = self.follows
-            self.updating = True
-            self.text.configure(state='normal')
-            self.text.mark_set('viewport', self.text.index('@0,0'))
-            self.text.mark_gravity('viewport', 'left')
-            self.text.delete(start, end)
-            if self.show_hebrew:
-                self.text.insert(end, get_display(value['he'])+'\n', ('he', 'rtl' if is_rtl(value['he']) else 'ltr'))
-            tags = ('current',) if index == len(self.records)-1 else ()
-            self.text.insert(end, get_display(value['ru']), tags+('rtl' if is_rtl(value['ru']) else 'ltr',))
-            self.text.configure(state='disabled')
-            if follows:
-                self.text.see('end')
-            else:
-                self.text.yview('viewport')
-            self.text.update_idletasks()
-            self.updating = False
-            self.follows = follows
-            self.scrolled(*self.text.yview())
+            self.records[index] = (value['he'],value['ru'])
+            self.render_record(index,replace=True)
         else:
             index = len(self.records)
             self.records.append((value['he'],value['ru']))
-            if identity is not None:
-                self.record_ids[identity] = index
-            self.insert_record(value['he'],value['ru'], index)
+            start = value.get('start')
+            seconds = max(0,start-self.session_started) if start is not None and self.session_started is not None else 0
+            self.record_meta.append({'seconds':seconds})
+            if identity is not None: self.record_ids[identity]=index
+            self.render_record(index)
         self.partial.set('')
 
-    def insert_record(self, he, ru, index=None):
-        follows = self.follows
-        first_visible = self.text.index('@0,0')
-        self.updating = True
+    def render_record(self, index, replace=False):
+        follows=self.follows
+        self.updating=True
         self.text.configure(state='normal')
-        self.text.tag_remove('current','1.0','end')
-        if self.text.index('end-1c') != '1.0':
-            previous_end = self.record_marks.get(index-1, (None, None))[1] if index is not None else None
-            if previous_end:
-                self.text.mark_gravity(previous_end, 'left')
-            self.text.insert('end','\n\n')
-            if previous_end:
-                self.text.mark_gravity(previous_end, 'right')
-        if index is not None:
-            start, end = f'entry_{index}_start', f'entry_{index}_end'
-            self.text.mark_set(start, 'end-1c')
-            self.text.mark_gravity(start, 'left')
-        if self.show_hebrew:
-            self.text.insert('end',get_display(he)+'\n',('he','rtl' if is_rtl(he) else 'ltr'))
-        self.text.insert('end',get_display(ru),('current','rtl' if is_rtl(ru) else 'ltr'))
-        if index is not None:
-            self.text.mark_set(end, 'end-1c')
-            self.text.mark_gravity(end, 'right')
-            self.record_marks[index] = (start, end)
-        self.text.configure(state='disabled')
-        if follows:
-            self.text.see('end')
+        self.text.mark_set('viewport',self.text.index('@0,0'))
+        self.text.mark_gravity('viewport','left')
+        if replace:
+            start,end=self.record_marks[index]
+            self.text.delete(start,end)
         else:
-            self.text.yview(first_visible)
+            if index:
+                previous_end=self.record_marks[index-1][1]
+                self.text.mark_gravity(previous_end,'left')
+                self.text.insert('end','\n\n')
+                self.text.mark_gravity(previous_end,'right')
+            start,end=f'entry_{index}_start',f'entry_{index}_end'
+            self.text.mark_set(start,'end-1c');self.text.mark_gravity(start,'left')
+            self.text.mark_set(end,'end-1c');self.text.mark_gravity(end,'right')
+            self.record_marks[index]=(start,end)
+        # Keep every field separately mapped, including separators and time labels.
+        for a,b,_ in self.presentations.get(index,[]):
+            self.text.mark_unset(a,b)
+        self.presentations[index]=[]
+        def insert(logical,tags=()):
+            number=len(self.presentations[index])
+            a,b=f'field_{index}_{number}_a',f'field_{index}_{number}_b'
+            self.text.mark_set(a,end);self.text.mark_gravity(a,'left')
+            presentation=present(logical)
+            self.text.insert(end,presentation.visual,tags)
+            self.text.mark_set(b,end);self.text.mark_gravity(b,'left')
+            self.presentations[index].append((a,b,presentation))
+        if index == len(self.records)-1: self.text.tag_remove('current','1.0','end')
+        insert('['+timecode(self.record_meta[index]['seconds'])+']\n',('timecode','ltr'))
+        source,translation=self.records[index]
+        if self.show_hebrew: insert(source+'\n',('he','rtl' if is_rtl(source) else 'ltr'))
+        tags=('current',) if index==len(self.records)-1 else ()
+        insert(translation,tags+('rtl' if is_rtl(translation) else 'ltr',))
+        # These logical separators belong to the preceding row for select-all copying.
+        self.text.configure(state='disabled')
+        if follows: self.text.see('end')
+        else: self.text.yview('viewport')
         self.text.update_idletasks()
-        self.updating = False
-        self.follows = follows
+        self.updating=False;self.follows=follows
         self.scrolled(*self.text.yview())
 
     def set_hebrew(self, show):
-        self.show_hebrew = show
-        self.text.configure(state='normal')
-        self.text.delete('1.0','end')
-        self.text.configure(state='disabled')
-        records = list(self.records)
-        for index, (he,ru) in enumerate(records):
-            self.insert_record(he,ru,index)
-        if show:
-            self.partial_label.pack(fill='x')
-        else:
-            self.partial_label.pack_forget()
+        self.show_hebrew=show
+        self.text.configure(state='normal');self.text.delete('1.0','end');self.text.configure(state='disabled')
+        self.presentations.clear();self.record_marks.clear()
+        for index in range(len(self.records)): self.render_record(index)
+        if show: self.partial_label.pack(fill='x')
+        else: self.partial_label.pack_forget()
         self.bottom()
 
 
@@ -267,10 +330,15 @@ class App:
         self.level = ttk.Progressbar(top,maximum=.15)
         self.level.pack(fill='x',pady=4)
         ttk.Label(top,textvariable=self.status,wraplength=430).pack(fill='x',pady=4)
-        self.advanced_button = ttk.Button(top,text='Дополнительно…',command=self.advanced)
-        self.advanced_button.pack(anchor='e')
+        footer = ttk.Frame(top)
+        footer.pack(fill='x')
+        ttk.Button(footer,text='История…',command=self.history_tools).pack(side='left')
+        self.advanced_button = ttk.Button(footer,text='Дополнительно…',command=self.advanced)
+        self.advanced_button.pack(side='right')
         self.quota_window = None
         self.advanced_window = None
+        self.history_window = None
+        self.export_timestamps = tk.BooleanVar(value=settings.get('export_timestamps',True))
         self.root.protocol('WM_DELETE_WINDOW',self.close)
         self.poll_timer = self.root.after(40,self.poll)
         self.root.bind('<Destroy>',self.cancel_poll_timer,add='+')
@@ -312,6 +380,8 @@ class App:
             for child in widget.winfo_children():
                 visit(child)
         visit(self.root)
+        self.history.context_menu.entryconfigure(0,label=self.ui_text('Копировать'))
+        self.history.context_menu.entryconfigure(1,label=self.ui_text('Выделить всё'))
         self.status.refresh()
         self.root.update_idletasks()
         self.root.minsize(max(500,self.root.winfo_reqwidth()),max(330,self.root.winfo_reqheight()))
@@ -327,6 +397,26 @@ class App:
 
     def mode_id(self):
         return list(MODE_NAMES)[self.mode_box.current()]
+
+    def history_tools(self):
+        if self.history_window and self.history_window.winfo_exists():
+            self.history_window.lift();return
+        window=self.history_window=tk.Toplevel(self.root)
+        window.title('История')
+        frame=ttk.Frame(window,padding=16);frame.pack(fill='both',expand=True)
+        ttk.Checkbutton(frame,text='Включать таймкоды',variable=self.export_timestamps,command=self.persist).grid(row=0,column=0,columnspan=3,sticky='w',pady=(0,12))
+        def copy(variant):
+            self.history.copy_text(self.history.export_text(variant,self.export_timestamps.get()))
+        def save(variant):
+            path=filedialog.asksaveasfilename(parent=window,defaultextension='.txt',filetypes=[('TXT','*.txt')])
+            if path:
+                try: self.history.save_text(path,variant,self.export_timestamps.get())
+                except OSError as exc: messagebox.showerror(self.ui_text('История'),str(exc),parent=window)
+        for row,(variant,label) in enumerate((('source','Только оригинал'),('translation','Только перевод'),('both','Оригинал и перевод')),1):
+            ttk.Label(frame,text=label).grid(row=row,column=0,sticky='w',padx=(0,12),pady=5)
+            ttk.Button(frame,text='Копировать',command=lambda v=variant:copy(v)).grid(row=row,column=1,padx=4)
+            ttk.Button(frame,text='Сохранить TXT…',command=lambda v=variant:save(v)).grid(row=row,column=2,padx=4)
+        self.apply_ui_language()
 
     def show_history(self):
         self.history.window.deiconify()
@@ -357,6 +447,8 @@ class App:
             return
         if self.advanced_window and self.advanced_window.winfo_exists():
             self.advanced_window.destroy()
+        if self.history.session_started is None:
+            self.history.session_started = time.monotonic()
         self.status.set('Подключение…')
         self.ui_sources[(self.start_button,'text')] = 'Пауза'
         self.start_button.configure(text=self.ui_text('Пауза'))
@@ -528,7 +620,7 @@ class App:
         self.settings.update(mode=self.mode_id(),source=self.source,ui_language=self.ui_language,
             source_language=self.language_id(self.source_language),target_language=self.language_id(self.target_language),translator=self.translator,
             control_geometry=self.root.geometry(),subtitle_geometry=self.history.window.geometry(),
-            show_hebrew=self.history.show_hebrew)
+            show_hebrew=self.history.show_hebrew,export_timestamps=self.export_timestamps.get())
         save_settings(self.settings)
 
     def close(self):
