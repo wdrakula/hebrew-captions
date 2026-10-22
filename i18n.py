@@ -110,6 +110,12 @@ def translate_ui(text, code):
 
 # History tools use the same catalog as the rest of the interface.
 HISTORY_MESSAGES = {
+'Контекст перевода': ('Translation context','הקשר לתרגום','Contexte de traduction','Contexto de traducción'),
+'Нейтральный': ('Neutral','ניטרלי','Neutre','Neutral'),
+'Учёба — математика': ('Study — mathematics','לימודים — מתמטיקה','Études — mathématiques','Estudio — matemáticas'),
+'Наука и техника': ('Science and technology','מדע וטכנולוגיה','Sciences et technologie','Ciencia y tecnología'),
+'Кино и сериалы': ('Films and series','סרטים וסדרות','Films et séries','Cine y series'),
+'Новости и политика': ('News and politics','חדשות ופוליטיקה','Actualités et politique','Noticias y política'),
 'История…': ('History…','היסטוריה…','Historique…','Historial…'),
 'История': ('History','היסטוריה','Historique','Historial'),
 'Включать таймкоды': ('Include timestamps','הוספת חותמות זמן','Inclure les horodatages','Incluir marcas de tiempo'),

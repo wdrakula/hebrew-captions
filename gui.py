@@ -12,6 +12,7 @@ from languages import LANGUAGES, TRANSLATORS, is_rtl, display_text as get_displa
 
 from i18n import UI_LANGUAGES, translate_ui
 from history_text import present, timecode, format_history
+from contexts import CONTEXTS, DEFAULT_CONTEXT
 from audio import outputs
 from config import load_key, load_settings, save_settings
 from pipeline import Runner, APIError
@@ -289,6 +290,9 @@ class App:
         self.closing = False
         self.settings = settings
         self.mode = tk.StringVar(value=MODE_NAMES.get(settings.get('mode','live'),MODE_NAMES['live']))
+        self.translation_context = settings.get('translation_context',DEFAULT_CONTEXT)
+        if self.translation_context not in CONTEXTS:
+            self.translation_context = DEFAULT_CONTEXT
         self.source = settings.get('source')  # None means follow default
         self.status = StatusText(self,value='Готово · ключ найден' if self.key else 'Не найден файл с ключом')
         self.locked = tk.BooleanVar(value=False)
@@ -458,6 +462,7 @@ class App:
         self.show_history()
         mode,source,key = self.mode_id(),self.source,self.key
         speech, target, translator = self.language_id(self.source_language), self.language_id(self.target_language), self.translator
+        translation_context = self.translation_context
         def worker():
             def emit(kind,value):
                 try:
@@ -467,7 +472,7 @@ class App:
                         raise RuntimeError('Окно не успевает обрабатывать субтитры')
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            self.runner = Runner(mode,source,key,emit,speech,target,translator)
+            self.runner = Runner(mode,source,key,emit,speech,target,translator,translation_context)
             self.task = self.loop.create_task(self.runner.run())
             if self.closing:
                 self.task.cancel()
@@ -510,6 +515,14 @@ class App:
         window.title('Дополнительно')
         frame = ttk.Frame(window,padding=16)
         frame.pack(fill='both',expand=True)
+        ttk.Label(frame,text='Контекст перевода').pack(anchor='w')
+        domain = tk.StringVar(value=CONTEXTS[self.translation_context][0])
+        domain_box = ttk.Combobox(frame,textvariable=domain,values=[v[0] for v in CONTEXTS.values()],state='readonly',width=40)
+        domain_box.pack(fill='x',pady=6)
+        def domain_changed(_):
+            self.translation_context = list(CONTEXTS)[domain_box.current()]
+            self.persist()
+        domain_box.bind('<<ComboboxSelected>>',domain_changed)
         ttk.Label(frame,text='Модель перевода').pack(anchor='w')
         model = tk.StringVar(value=TRANSLATORS[self.translator])
         model_box = ttk.Combobox(frame,textvariable=model,values=list(TRANSLATORS.values()),state='readonly',width=40)
@@ -558,7 +571,7 @@ class App:
             self.settings['opacity']=float(value)
         ttk.Scale(frame,from_=.5,to=1,variable=opacity,command=opacity_changed).pack(fill='x')
         ttk.Button(frame,text='Готово',command=lambda:(self.persist(),window.destroy())).pack(anchor='e',pady=10)
-        window.variables = (model,selected,show,size,opacity)
+        window.variables = (domain,model,selected,show,size,opacity)
         self.apply_ui_language()
 
     def quota(self):
@@ -618,7 +631,7 @@ class App:
 
     def persist(self):
         self.settings.update(mode=self.mode_id(),source=self.source,ui_language=self.ui_language,
-            source_language=self.language_id(self.source_language),target_language=self.language_id(self.target_language),translator=self.translator,
+            source_language=self.language_id(self.source_language),target_language=self.language_id(self.target_language),translator=self.translator,translation_context=self.translation_context,
             control_geometry=self.root.geometry(),subtitle_geometry=self.history.window.geometry(),
             show_hebrew=self.history.show_hebrew,export_timestamps=self.export_timestamps.get())
         save_settings(self.settings)
