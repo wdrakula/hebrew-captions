@@ -29,6 +29,10 @@ class APIError(RuntimeError):
         super().__init__(message or 'Ошибка OpenAI: '+str(code))
 
 
+class RecognitionStalled(RuntimeError):
+    pass
+
+
 def api_error(event):
     error = event.get('error') or {}
     return APIError(error.get('code') or error.get('type') or 'api_error', error.get('message',''))
@@ -141,7 +145,7 @@ class Session:
                 self.log.emit('route_change', source=frame.source)
             outstanding = list(self.turns.values()) + list(self.pending)
             if len(outstanding) > 12 or any(time.monotonic()-t.committed > 30 for t in outstanding):
-                raise RuntimeError('Распознавание отстаёт; сеанс остановлен')
+                raise RecognitionStalled('Распознавание отстаёт; сеанс остановлен')
             packets, turn = self.segmenter.feed(frame, probability >= .35)
             if packets and self.active is None:
                 self.active = Turn(self.segmenter.sequence+1, self.segmenter.start, frame.end,
@@ -247,7 +251,7 @@ class Session:
 
     async def run(self):
         import websockets
-        args = {'open_timeout':15, 'max_size':2**20}
+        args = {'open_timeout':15, 'close_timeout':3, 'max_size':2**20}
         name = 'additional_headers' if 'additional_headers' in inspect.signature(websockets.connect).parameters else 'extra_headers'
         args[name] = {'Authorization':'Bearer '+self.runner.key}
         tasks = []
@@ -274,8 +278,14 @@ class Session:
                     for index, task in enumerate(tasks):
                         if task.done():
                             task.result()
-                            if index != 0:
-                                raise RuntimeError('Соединение распознавания закрыто')
+                            if index == 1:
+                                raise RecognitionStalled('Соединение распознавания закрыто')
+                            if index == 2:
+                                raise RuntimeError('Обработка перевода завершилась')
+                    # Run independently of captured frames, including during silence.
+                    waiting = list(self.pending) + list(self.turns.values())
+                    if any(time.monotonic()-turn.committed > 30 for turn in waiting):
+                        raise RecognitionStalled('Не получен результат распознавания за 30 секунд')
                     if self.closed_input:
                         if self.outstanding == 0:
                             break
@@ -330,13 +340,16 @@ class Runner:
                 started = time.monotonic()
 
     async def run(self):
+        from websockets.exceptions import ConnectionClosed
         if not self.key:
             raise RuntimeError('Не найден файл с API-ключом')
         producer = asyncio.create_task(self.collect())
         session_task = None
+        retries = 0
         try:
             while not self.stopping:
                 mode = self.desired_mode
+                started = time.monotonic()
                 session_task = asyncio.create_task(Session(self, mode).run())
                 done, _ = await asyncio.wait([producer,session_task], return_when=asyncio.FIRST_COMPLETED)
                 if producer in done:
@@ -346,9 +359,42 @@ class Runner:
                     # Producer can finish before sender notices graceful stop.
                     await session_task
                     break
-                session_task.result()
+                try:
+                    session_task.result()
+                except (ConnectionClosed, TimeoutError, RecognitionStalled) as exc:
+                    if self.stopping:
+                        raise
+                    if time.monotonic()-started > 60:
+                        retries = 0
+                    retries += 1
+                    # Never replay uncertain commits; resume at current audio.
+                    dropped = 0
+                    while not self.frames.empty():
+                        self.frames.get_nowait()
+                        dropped += 1
+                    self.log.emit('stt_recovery', error_type=type(exc).__name__,
+                                  attempt=retries, dropped_capture_frames=dropped,
+                                  possible_audio_gap=True,
+                                  close_code=getattr(getattr(exc, 'rcvd', None), 'code', None))
+                    if retries > 3:
+                        raise RuntimeError('Не удалось восстановить распознавание после трёх попыток') from exc
+                    self.emit('status', 'Восстановление соединения… Возможен пропуск речи.')
+                    for _ in range(10*retries):
+                        if self.stopping or producer.done():
+                            break
+                        await asyncio.sleep(.1)
+                    # Audio captured during backoff is stale too.
+                    while not self.frames.empty():
+                        self.frames.get_nowait()
+                    continue
                 if not self.stopping:
                     self.emit('status', 'Переключение')
+        except Exception as exc:
+            # Exception messages may contain server text or credentials: metadata only.
+            cause = exc.__cause__ or exc.__context__
+            self.log.emit('pipeline_error', error_type=type(exc).__name__,
+                          cause_type=type(cause).__name__ if cause else None)
+            raise
         finally:
             producer.cancel()
             if session_task and not session_task.done():

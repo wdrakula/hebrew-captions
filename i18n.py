@@ -110,6 +110,10 @@ def translate_ui(text, code):
 
 # History tools use the same catalog as the rest of the interface.
 HISTORY_MESSAGES = {
+'Восстановление соединения… Возможен пропуск речи.': ('Reconnecting… Some speech may be missed.','מתחבר מחדש… ייתכן שחלק מהדיבור יאבד.','Reconnexion… Une partie de la parole peut être perdue.','Reconectando… Puede perderse parte del habla.'),
+'Не получен результат распознавания за 30 секунд': ('No recognition result within 30 seconds','לא התקבלה תוצאת זיהוי תוך 30 שניות','Aucun résultat de reconnaissance en 30 secondes','Sin resultado de reconocimiento en 30 segundos'),
+'Не удалось восстановить распознавание после трёх попыток': ('Recognition could not reconnect after three attempts','לא ניתן לחדש את הזיהוי לאחר שלושה ניסיונות','Impossible de rétablir la reconnaissance après trois tentatives','No se pudo restablecer el reconocimiento tras tres intentos'),
+'Обработка перевода завершилась': ('Translation processing ended','עיבוד התרגום הסתיים','Le traitement de la traduction est terminé','El procesamiento de la traducción terminó'),
 'Контекст перевода': ('Translation context','הקשר לתרגום','Contexte de traduction','Contexto de traducción'),
 'Нейтральный': ('Neutral','ניטרלי','Neutre','Neutral'),
 'Учёба — математика': ('Study — mathematics','לימודים — מתמטיקה','Études — mathématiques','Estudio — matemáticas'),
